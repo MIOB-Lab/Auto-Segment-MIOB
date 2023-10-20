@@ -12,11 +12,6 @@ from fastai.learner import load_learner
 
 
 
-
-
-
-
-
 # Redefine the function that automatically links images and labels
 def label_func(fn): return "C:/labels/f{fn.stem}_P{fn.suffix}"
 # Load.pkl file with the trained model.
@@ -31,7 +26,7 @@ if testFile.endswith('.mhd'):
 #consistent with the orientation used in Appendix 2.
     MRI = sitk.DICOMOrient(MRI,"LPI")
     prediction = np.empty(sitk.GetArrayFromImage(MRI).shape)
-    for i in range(sitk.GetArrayFromImage(MRI).shape[2]):
+    for index in range(sitk.GetArrayFromImage(MRI).shape[2]):
         # for each one of the 2D sagittal slices of the MRI volume
         # create a RGB image from the gray level image
         slice2D = sitk.GetArrayFromImage(MRI[i,:,:])
