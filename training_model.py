@@ -1,48 +1,121 @@
-import cv2
-import time
 import os
-import numpy as np
-import SimpleITK as sitk
-import tensorflow as tf
+import shutil
+import tempfile
 
-from fastai.learner import load_learner
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+
+from monai.losses import DiceCELoss
+from monai.inferers import sliding_window_inference
+from monai.transforms import (
+    AsDiscrete,
+    Compose,
+    CropForegroundd,
+    LoadImaged,
+    Orientationd,
+    RandFlipd,
+    RandCropByPosNegLabeld,
+    RandShiftIntensityd,
+    ScaleIntensityRanged,
+    Spacingd,
+    RandRotate90d,
+    EnsureTyped,
+)
+
+from monai.config import print_config
+from monai.metrics import DiceMetric
+from monai.networks.nets import SwinUNETR
+
+from monai.data import (
+    ThreadDataLoader,
+    CacheDataset,
+    load_decathlon_datalist,
+    decollate_batch,
+    set_track_meta,
+)
+
+
+import torch
 
 
 
+if __name__ == "__main__":
+    print_config()
+    directory = os.environ.get("MONAI_DATA_DIRECTORY")
+    root_dir = tempfile.mkdtemp() if directory is None else directory
+    print(root_dir)
+    num_samples = 4
 
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
-# Redefine the function that automatically links images and labels
-def label_func(fn): return "C:/labels/f{fn.stem}_P{fn.suffix}"
-# Load.pkl file with the trained model.
-learn = load_learner('/content/gdrive/MyDrive/TrainingDataset/MyOwnModel.pkl')
-
-# select the MHD image that you want to segment
-testFile = '/content/gdrive/MyDrive/Test/TestImage1.mhd'
-if testFile.endswith('.mhd'):
-    # If it is a MHD file, go on
-    MRI = sitk.ReadImage(testFile)
-# Reorient image to ensure the code works properly. Be
-#consistent with the orientation used in Appendix 2.
-    MRI = sitk.DICOMOrient(MRI,"LPI")
-    prediction = np.empty(sitk.GetArrayFromImage(MRI).shape)
-    for index in range(sitk.GetArrayFromImage(MRI).shape[2]):
-        # for each one of the 2D sagittal slices of the MRI volume
-        # create a RGB image from the gray level image
-        slice2D = sitk.GetArrayFromImage(MRI[i,:,:])
-        stacked_img = (np.dstack((slice2D,slice2D,slice2D))).astype(np.uint8)
-        # Call the learner and do the prediction(this is the core of the
-        #method)
-        pred = learn.predict(stacked_img)
-        prediction[:,:,i] = np.array(pred[0])
-# Create your own folder for the prediction and change the directory
-#to yours
-save_dir = '/content/gdrive/MyDrive/Predictions/'
-# This would be the name of your segmentation file
-name = "TestImage1_pred.mha"
-#Copy the header information from the MRI image and create 3D
-#image of the segmentation
-image3D = sitk.GetImageFromArray(prediction.astype(np.uint8))
-image3D.CopyInformation(MRI)
-save_path = os.path.join(save_dir,name)
-sitk.WriteImage(image3D, save_path)
+    train_transforms = Compose(
+        [
+            LoadImaged(keys=["image", "label"], ensure_channel_first=True),
+            ScaleIntensityRanged(
+                keys=["image"],
+                a_min=-175,
+                a_max=250,
+                b_min=0.0,
+                b_max=1.0,
+                clip=True,
+            ),
+            CropForegroundd(keys=["image", "label"], source_key="image"),
+            Orientationd(keys=["image", "label"], axcodes="RAS"),
+            Spacingd(
+                keys=["image", "label"],
+                pixdim=(1.5, 1.5, 2.0),
+                mode=("bilinear", "nearest"),
+            ),
+            EnsureTyped(keys=["image", "label"], device=device, track_meta=False),
+            RandCropByPosNegLabeld(
+                keys=["image", "label"],
+                label_key="label",
+                spatial_size=(96, 96, 96),
+                pos=1,
+                neg=1,
+                num_samples=num_samples,
+                image_key="image",
+                image_threshold=0,
+            ),
+            RandFlipd(
+                keys=["image", "label"],
+                spatial_axis=[0],
+                prob=0.10,
+            ),
+            RandFlipd(
+                keys=["image", "label"],
+                spatial_axis=[1],
+                prob=0.10,
+            ),
+            RandFlipd(
+                keys=["image", "label"],
+                spatial_axis=[2],
+                prob=0.10,
+            ),
+            RandRotate90d(
+                keys=["image", "label"],
+                prob=0.10,
+                max_k=3,
+            ),
+            RandShiftIntensityd(
+                keys=["image"],
+                offsets=0.10,
+                prob=0.50,
+            ),
+        ]
+    )
+    val_transforms = Compose(
+        [
+            LoadImaged(keys=["image", "label"], ensure_channel_first=True),
+            ScaleIntensityRanged(keys=["image"], a_min=-175, a_max=250, b_min=0.0, b_max=1.0, clip=True),
+            CropForegroundd(keys=["image", "label"], source_key="image"),
+            Orientationd(keys=["image", "label"], axcodes="RAS"),
+            Spacingd(
+                keys=["image", "label"],
+                pixdim=(1.5, 1.5, 2.0),
+                mode=("bilinear", "nearest"),
+            ),
+            EnsureTyped(keys=["image", "label"], device=device, track_meta=True),
+        ]
+    )
